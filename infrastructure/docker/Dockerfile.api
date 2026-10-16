@@ -1,0 +1,71 @@
+# =============================================================================
+# SICAE — API NestJS (multi-stage build)
+# Etapa "builder":  instala dependencias con pnpm y compila el proyecto.
+# Etapa "runtime":  imagen mínima con el código compilado, corriendo como
+#                   usuario no-root. Imagen final: node:22-alpine.
+# Build (desde la raíz del repo):
+#   docker build -f infrastructure/docker/Dockerfile.api -t sicae-api .
+# =============================================================================
+
+# --- Etapa 1: dependencias + compilación --------------------------------------
+FROM node:22-alpine AS builder
+
+WORKDIR /repo
+
+# corepack gestiona la versión exacta de pnpm declarada en "packageManager"
+# del package.json raíz; así el CI y las imágenes usan la misma versión.
+RUN corepack enable
+
+# Copiamos SOLO los manifiestos primero para aprovechar la caché de capas:
+# el caché de pnpm solo se invalida si cambian package.json / pnpm-lock.yaml.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+
+# Instalación reproducible. Si el lockfile no está sincronizado (p. ej. una rama
+# en desarrollo sin actualizarlo), caemos al fallback sin frozen-lockfile.
+RUN pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
+
+# Código fuente completo del monorepo.
+COPY . .
+
+# Genera el cliente Prisma (contra el schema de apps/api) y compila NestJS
+# a apps/api/dist (main.js arranca el servidor).
+RUN pnpm --filter @sicae/api prisma:generate \
+ && pnpm --filter @sicae/api build
+
+# --- Etapa 2: runtime mínimo --------------------------------------------------
+FROM node:22-alpine AS runtime
+
+ENV NODE_ENV=production
+WORKDIR /app
+
+# OpenSSL es requerido por el query engine de Prisma en Alpine.
+RUN apk add --no-cache openssl
+
+# Usuario no-root por seguridad.
+RUN addgroup -S sicae && adduser -S sicae -G sicae
+
+# Copiamos únicamente lo necesario para ejecutar:
+#  - node_modules raíz (con @prisma/client generado por la etapa builder)
+#  - node_modules de apps/api (dependencias propias del paquete)
+#  - dist, prisma (schemas/migraciones) y manifiestos
+COPY --from=builder /repo/node_modules ./node_modules
+COPY --from=builder /repo/package.json ./package.json
+COPY --from=builder /repo/pnpm-lock.yaml ./pnpm-lock.yaml
+COPY --from=builder /repo/pnpm-workspace.yaml ./pnpm-workspace.yaml
+COPY --from=builder /repo/apps/api/dist ./apps/api/dist
+COPY --from=builder /repo/apps/api/node_modules ./apps/api/node_modules
+COPY --from=builder /repo/apps/api/package.json ./apps/api/package.json
+COPY --from=builder /repo/apps/api/prisma ./apps/api/prisma
+
+# Directorio de subidas (justificaciones) propiedad del usuario del contenedor.
+# En Compose se monta un volumen en /app/uploads.
+RUN mkdir -p /app/uploads && chown -R sicae:sicae /app
+
+USER sicae
+EXPOSE 3000
+
+# HEALTHCHECK básico contra el endpoint de salud de NestJS.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "require('http').get('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/v1/health',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+
+CMD ["node", "apps/api/dist/main.js"]

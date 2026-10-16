@@ -1,0 +1,25 @@
+{
+  "name": "sicae",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SICAE — Sistema de Control de Asistencia Estudiantil (monorepo)",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,green \"pnpm --filter @sicae/api start:dev\" \"pnpm --filter @sicae/web dev\"",
+    "build": "pnpm --filter @sicae/api build && pnpm --filter @sicae/web build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @sicae/api test",
+    "test:e2e": "pnpm --filter @sicae/e2e test",
+    "db:migrate": "pnpm --filter @sicae/api db:migrate",
+    "db:seed": "pnpm --filter @sicae/api db:seed",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json,yml,yaml}\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2"
+  }
+}

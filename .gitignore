@@ -1,0 +1,41 @@
+# Dependencias
+node_modules/
+.pnpm-store/
+
+# Compilación
+dist/
+build/
+*.tsbuildinfo
+
+# Variables de entorno (nunca subir secretos)
+.env
+.env.local
+.env.*.local
+
+# Cobertura de tests
+coverage/
+
+# Playwright
+playwright-report/
+test-results/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Bases de datos locales
+*.db
+prisma/*.db
+
+# Sistema / editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Subidas de archivos (justificaciones)
+uploads/
+backups/

@@ -1,0 +1,402 @@
+// ============================================================
+// SICAE — Esquema de datos (PostgreSQL)
+// Sistema de Control de Asistencia Estudiantil
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------- Enumeraciones ----------------------------
+
+enum RoleName {
+  ADMIN
+  COORDINADOR_ACADEMICO
+  DOCENTE
+  ESTUDIANTE
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  INACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  JUSTIFIED
+  EXCUSED
+}
+
+enum AttendanceSource {
+  MANUAL
+  QR
+  IMPORT
+}
+
+enum ClassSessionStatus {
+  SCHEDULED
+  IN_PROGRESS
+  CLOSED
+  CANCELLED
+}
+
+enum JustificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+// ---------------------------- Identity ----------------------------
+
+model User {
+  id                 String   @id @default(cuid())
+  email              String   @unique
+  passwordHash       String
+  firstName          String
+  lastName           String
+  phone              String?
+  active             Boolean  @default(true)
+  mustChangePassword Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  roles                  Role[]                 @relation("UserRoles")
+  passwordResetTokens    PasswordResetToken[]
+  taughtSections         Section[]              @relation("SectionTeacher")
+  markedAttendance       AttendanceRecord[]     @relation("AttendanceMarker")
+  reviewedJustifications JustificationRequest[] @relation("JustificationReviewer")
+  closedSessions         ClassSession[]         @relation("SessionCloser")
+  auditLogs              AuditLog[]
+
+  @@index([active])
+}
+
+model Role {
+  id          String       @id @default(cuid())
+  name        RoleName     @unique
+  description String?
+  createdAt   DateTime     @default(now())
+
+  users       User[]       @relation("UserRoles")
+  permissions Permission[] @relation("RolePermissions")
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  description String?
+
+  roles       Role[]   @relation("RolePermissions")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+
+  @@index([userId])
+}
+
+// ---------------------------- Academic ----------------------------
+
+model Career {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  degree    String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  terms    Term[]
+  courses  Course[]
+  students Student[]
+  policies AttendancePolicy[]
+}
+
+model Term {
+  id        String   @id @default(cuid())
+  name      String
+  startDate DateTime @db.Date
+  endDate   DateTime @db.Date
+  isCurrent Boolean  @default(false)
+
+  career   Career    @relation(fields: [careerId], references: [id], onDelete: Cascade)
+  careerId String
+  sections Section[]
+
+  @@unique([careerId, name])
+  @@index([careerId, isCurrent])
+}
+
+model Course {
+  id       String @id @default(cuid())
+  code     String
+  name     String
+  credits  Int    @default(4)
+  semester Int
+
+  career   Career    @relation(fields: [careerId], references: [id], onDelete: Cascade)
+  careerId String
+  sections Section[]
+
+  @@unique([careerId, code])
+}
+
+model Section {
+  id        String @id @default(cuid())
+  name      String
+  capacity  Int    @default(30)
+
+  course    Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  courseId  String
+  term      Term   @relation(fields: [termId], references: [id], onDelete: Cascade)
+  termId    String
+  teacher   User?  @relation("SectionTeacher", fields: [teacherId], references: [id], onDelete: SetNull)
+  teacherId String?
+
+  schedules   Schedule[]
+  sessions    ClassSession[]
+  enrollments Enrollment[]
+  alerts      Alert[]
+
+  @@unique([courseId, termId, name])
+  @@index([termId])
+}
+
+model Schedule {
+  id        String   @id @default(cuid())
+  dayOfWeek Int // 0 = lunes … 6 = domingo
+  startTime DateTime @db.Time
+  endTime   DateTime @db.Time
+  room      String?
+
+  section   Section  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  sectionId String
+
+  @@index([sectionId, dayOfWeek])
+}
+
+model ClassSession {
+  id         String             @id @default(cuid())
+  date       DateTime           @db.Date
+  topic      String?
+  status     ClassSessionStatus @default(SCHEDULED)
+  startedAt  DateTime?
+  closedAt   DateTime?
+
+  section    Section            @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  sectionId  String
+  closedBy   User?              @relation("SessionCloser", fields: [closedById], references: [id], onDelete: SetNull)
+  closedById String?
+
+  attendanceRecords AttendanceRecord[]
+
+  @@index([sectionId, date])
+  @@index([status, date])
+}
+
+// ---------------------------- Enrollment ----------------------------
+
+model Student {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  firstName String
+  lastName  String
+  email     String   @unique
+  phone     String?
+  createdAt DateTime @default(now())
+
+  career                 Career?               @relation(fields: [careerId], references: [id], onDelete: SetNull)
+  careerId               String?
+  enrollments            Enrollment[]
+  attendanceRecords      AttendanceRecord[]
+  justificationRequests  JustificationRequest[]
+  riskAssessments        RiskAssessment[]
+  alerts                 Alert[]
+
+  @@index([lastName])
+}
+
+model Enrollment {
+  id         String           @id @default(cuid())
+  status     EnrollmentStatus @default(ACTIVE)
+  enrolledAt DateTime         @default(now())
+
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  studentId String
+  section   Section @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  sectionId String
+
+  attendanceRecords AttendanceRecord[]
+
+  @@unique([studentId, sectionId])
+  @@index([sectionId, status])
+}
+
+// ---------------------------- Attendance ----------------------------
+
+model AttendanceRecord {
+  id                String           @id @default(cuid())
+  status            AttendanceStatus
+  source            AttendanceSource @default(MANUAL)
+  notes             String?
+  markedAt          DateTime         @default(now())
+  correctedAt       DateTime?
+  correctionReason  String?
+
+  session           ClassSession     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sessionId         String
+  student           Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  studentId         String
+  enrollment        Enrollment?      @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
+  enrollmentId      String?
+  markedBy          User?            @relation("AttendanceMarker", fields: [markedById], references: [id], onDelete: SetNull)
+  markedById        String?
+
+  justification     JustificationRequest?
+
+  @@unique([sessionId, studentId])
+  @@index([studentId, markedAt])
+  @@index([sessionId, status])
+}
+
+// ---------------------------- Justification ----------------------------
+
+model JustificationRequest {
+  id                String              @id @default(cuid())
+  reason            String
+  status            JustificationStatus @default(PENDING)
+  submittedAt       DateTime            @default(now())
+  reviewedAt        DateTime?
+  reviewComment     String?
+
+  attendanceRecord  AttendanceRecord    @relation(fields: [attendanceRecordId], references: [id], onDelete: Cascade)
+  attendanceRecordId String             @unique
+  student           Student             @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  studentId         String
+  reviewedBy        User?               @relation("JustificationReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedById      String?
+
+  attachments       JustificationAttachment[]
+
+  @@index([status, submittedAt])
+  @@index([studentId])
+}
+
+model JustificationAttachment {
+  id         String   @id @default(cuid())
+  fileName   String
+  filePath   String
+  mimeType   String
+  sizeBytes  Int
+  uploadedAt DateTime @default(now())
+
+  request   JustificationRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requestId String
+
+  @@index([requestId])
+}
+
+// ---------------------------- Followup ----------------------------
+
+model AttendancePolicy {
+  id                        String   @id @default(cuid())
+  name                      String
+  maxAbsences               Int      @default(3)
+  absencePercentageThreshold Float    @default(25) // % de inasistencias que dispara alerta
+  toleranceMinutes          Int      @default(10)
+  active                    Boolean  @default(true)
+  createdAt                 DateTime @default(now())
+
+  career   Career? @relation(fields: [careerId], references: [id], onDelete: Cascade)
+  careerId String?
+  alerts   Alert[]
+
+  @@index([active])
+}
+
+model RiskAssessment {
+  id                String        @id @default(cuid())
+  evaluatedAt       DateTime      @default(now())
+  totalSessions     Int
+  absences          Int
+  justifiedAbsences Int
+  absencesRate      Float // 0–100 (%)
+  riskScore         Float // 0–100
+  level             AlertSeverity
+  factors           Json?
+
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  studentId String
+
+  @@index([studentId, evaluatedAt])
+  @@index([level])
+}
+
+model Alert {
+  id              String            @id @default(cuid())
+  type            String // HIGH_ABSENCE_RATE | POLICY_VIOLATION | MANUAL
+  severity        AlertSeverity
+  status          AlertStatus       @default(OPEN)
+  message         String
+  createdAt       DateTime          @default(now())
+  acknowledgedAt  DateTime?
+  resolvedAt      DateTime?
+
+  student         Student?          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  studentId       String?
+  section         Section?          @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  sectionId       String?
+  policy          AttendancePolicy? @relation(fields: [policyId], references: [id], onDelete: SetNull)
+  policyId        String?
+
+  @@index([status, severity])
+  @@index([studentId])
+}
+
+// ---------------------------- Audit ----------------------------
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  action     String // CREATED | UPDATED | DELETED | LOGIN | CLOSED_SESSION | CORRECTED_ATTENDANCE | REVIEWED_JUSTIFICATION
+  entityType String
+  entityId   String?
+  before     Json?
+  after      Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId String?
+
+  @@index([entityType, createdAt])
+  @@index([userId, createdAt])
+}
